@@ -1,0 +1,4 @@
+[submodule "third_party/openpi"]
+	path = third_party/openpi
+	url = https://github.com/LavetteSinsora/openpi
+	branch = libero_replication_modifications

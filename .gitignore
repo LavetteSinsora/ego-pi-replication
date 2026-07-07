@@ -1,0 +1,5 @@
+# local LeRobot dataset (fetched from HF Hub on pods)
+data/
+
+__pycache__/
+*.pyc
