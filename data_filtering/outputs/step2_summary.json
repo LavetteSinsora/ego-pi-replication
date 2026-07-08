@@ -1,0 +1,27 @@
+{
+  "frames": 110761,
+  "vel_violation_frames": {
+    "left": 4251,
+    "right": 4496
+  },
+  "freeze_jump_frames": {
+    "left": 0,
+    "right": 0
+  },
+  "worst_vel_rad_s": {
+    "thumb_flex": 3.671,
+    "thumb_rot": 9.199,
+    "index": 4.857,
+    "middle": 5.135,
+    "ring": 5.394,
+    "pinky": 4.827
+  },
+  "vel_limit_rad_s": {
+    "thumb_flex": 2.5303,
+    "thumb_rot": 2.6175,
+    "index": 2.2685,
+    "middle": 2.2685,
+    "ring": 2.2685,
+    "pinky": 2.2685
+  }
+}

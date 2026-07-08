@@ -1,0 +1,23 @@
+{
+  "frames": 110761,
+  "soft_err_frames": {
+    "left": 67010,
+    "right": 77696
+  },
+  "hard_err_frames": {
+    "left": 28643,
+    "right": 33240
+  },
+  "contact_frames": {
+    "left": 1186,
+    "right": 0
+  },
+  "max_penetration_mm": {
+    "left": 0.42,
+    "right": 0.0
+  },
+  "contact_pair_step_counts": {
+    "index-thumb": 1761,
+    "middle-thumb": 4
+  }
+}
