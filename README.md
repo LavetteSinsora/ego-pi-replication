@@ -23,6 +23,7 @@ scripts/               experiment scripts (this repo)
   merge_eval_shards.py   merge sharded eval results
   wandb_notify.py        alerts + artifact uploads
   video_browser.py       local dataset video viewer
+  data_dashboard.py      local dataset dashboard (videos + state/action charts)
 data/                  local LeRobot dataset (git-ignored)
 third_party/openpi/    openpi fork (git submodule, branch
                        libero_replication_modifications); venv lives here
