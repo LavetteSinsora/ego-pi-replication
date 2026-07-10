@@ -3,3 +3,13 @@ data/
 
 __pycache__/
 *.pyc
+
+# repo-local venv (uv; see wrist_replay/README.md)
+.venv/
+
+# data_extraction intermediates + generated reports
+data_extraction_work/
+
+# macOS / MuJoCo noise
+.DS_Store
+MUJOCO_LOG.TXT
