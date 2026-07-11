@@ -1,11 +1,14 @@
 """s004: per-tick quality filters -> sub-episodes.
 
-Every filter yields a (T,) bool mask (True = bad tick). The combined mask
-splits the recording into contiguous good runs; runs shorter than
-cfg.min_subepisode_ticks (anchor + one full chunk) are dropped; the run that
-contains the recording's final tick is marked episode_real_end (only there
-is repeat-padding of action chunks semantically "hold pose" - everywhere
-else the human kept moving and padding would be a lie).
+Every filter yields a (T,) bool mask (True = bad tick). Interior bad runs of
+<= cfg.bridge_max_ticks are BRIDGED (the recording stays whole across short
+blips: the flagged ticks' stored poses may appear inside action windows, but
+they are excluded as datapoint anchors via the anchor_bad mask). The
+remaining combined mask splits the recording into contiguous good runs; runs
+shorter than cfg.min_subepisode_ticks (anchor + one full chunk) are dropped;
+the run that contains the recording's final tick is marked episode_real_end
+(only there is repeat-padding of action chunks semantically "hold pose" -
+everywhere else the human kept moving and padding would be a lie).
 
 Filters and their signal sources:
 - gap/tracking-lost: s001 valid masks (bracketing gap > max_gap_ms, hand inactive)
@@ -46,6 +49,30 @@ def _velocity_masks(cfg, pos, quat, valid):
         if v > cfg.vel_max_m_s or w > cfg.ang_vel_max_deg_s:
             bad[k] = bad[k - 1] = True
     return bad
+
+
+def _bridge_short_runs(bad, max_ticks):
+    """Interior bad runs of <= max_ticks become good-for-splitting; returns
+    (bad_after_bridging, bridged_mask). A run touching tick 0 or T-1 is an
+    edge (plain trim), never bridged."""
+    bad = bad.copy()
+    bridged = np.zeros_like(bad)
+    if max_ticks <= 0:
+        return bad, bridged
+    T = len(bad)
+    k = 0
+    while k < T:
+        if bad[k]:
+            j = k
+            while j < T and bad[j]:
+                j += 1
+            if k > 0 and j < T and j - k <= max_ticks:
+                bad[k:j] = False
+                bridged[k:j] = True
+            k = j
+        else:
+            k += 1
+    return bad, bridged
 
 
 def _split_runs(good, min_len, T):
@@ -116,18 +143,21 @@ def run_episode(cfg, ep_path):
             bad_any |= masks[f"{f}_{pre}"]
     masks["bad_any"] = bad_any
 
-    starts, ends, real_end = _split_runs(~bad_any, cfg.min_subepisode_ticks, T)
+    bad_split, bridged = _bridge_short_runs(bad_any, cfg.bridge_max_ticks)
+    starts, ends, real_end = _split_runs(~bad_split, cfg.min_subepisode_ticks, T)
     arrays = {**{k: v.astype(bool) for k, v in masks.items()},
+              "anchor_bad": bridged.astype(bool),
               "subep_start": starts, "subep_end": ends, "subep_real_end": real_end}
     meta = {
         "ticks_total": int(T),
         "ticks_kept": int(sum(int(e - s) for s, e in zip(starts, ends))),
+        "ticks_bridged": int(bridged.sum()),
         "n_subepisodes": int(len(starts)),
         "subepisodes": [{"start": int(s), "end": int(e), "real_end": bool(r)}
                         for s, e, r in zip(starts, ends, real_end)],
         "bad_counts": {k: int(v.sum()) for k, v in masks.items()},
     }
     print(f"  [{ep}] kept {meta['ticks_kept']}/{T} ticks in "
-          f"{meta['n_subepisodes']} sub-episode(s); "
+          f"{meta['n_subepisodes']} sub-episode(s), {meta['ticks_bridged']} bridged; "
           f"bad: {({k: c for k, c in meta['bad_counts'].items() if c} or 'none')}")
     return arrays, meta

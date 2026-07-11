@@ -144,6 +144,8 @@ def run_global(cfg, ep_paths):
              for h in cfg.hands], axis=1).astype(np.float32)
 
         jpegs = _JpegSource(s001_meta["source"])
+        anchor_bad_all = s004.get("anchor_bad",
+                                  np.zeros(len(s001["ticks_ns"]), dtype=bool))
         for start, end, real_end in zip(s004["subep_start"], s004["subep_end"],
                                         s004["subep_real_end"]):
             start, end = int(start), int(end)
@@ -166,6 +168,11 @@ def run_global(cfg, ep_paths):
                 "tick_start": start,
                 "tick_end": end,
                 "episode_real_end": bool(real_end),
+                # frame offsets WITHIN this LeRobot episode whose tick was
+                # bridged (bad but kept): excluded as datapoint anchors by the
+                # loader's boundary indexing
+                "anchor_bad": np.flatnonzero(
+                    anchor_bad_all[start:end]).tolist(),
                 "S": placement["S"].tolist(),
                 "B_left": B["B_left"].tolist(),
                 "B_right": B["B_right"].tolist(),

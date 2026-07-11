@@ -71,7 +71,9 @@ def main():
 
     try:
         viewer = mujoco.viewer.launch_passive(backend.model, backend.data,
-                                              key_callback=key_cb)
+                                              key_callback=key_cb,
+                                              show_left_ui=False,
+                                              show_right_ui=False)
     except RuntimeError as e:
         raise SystemExit(
             f"could not open the viewer ({e}).\nOn macOS run under mjpython:\n"

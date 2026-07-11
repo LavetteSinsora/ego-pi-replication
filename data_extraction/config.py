@@ -73,6 +73,13 @@ class PipelineConfig:
     hand_residual_fingers: tuple[str, ...] = ("thumb", "index", "middle")
     filter_hands_independently: bool = True
     allow_terminal_padding: bool = True
+    # Interior bad runs of <= this many ticks are BRIDGED instead of splitting
+    # the episode: the flagged ticks stay inside the sub-episode (their stored
+    # poses may appear inside action windows) but are excluded as datapoint
+    # anchors (anchor_bad mask, enforced by the loader's boundary indexing).
+    # 0 disables bridging. 9 ticks = 0.3 s at 30 Hz; chosen because 8 of the
+    # 11 interior gaps on put_bottle_in_box are <= 9 ticks.
+    bridge_max_ticks: int = 9
 
     # ---- s005 output ----
     output_root: str = str(REPO_ROOT / "lerobot_datasets")
@@ -157,7 +164,7 @@ STAGE_FIELDS = {
              "ik_err_max_cm", "ik_err_max_deg", "hand_blocked_filter",
              "hand_contact_filter", "hand_residual_max_mm", "hand_residual_min_run",
              "hand_residual_fingers", "filter_hands_independently",
-             "allow_terminal_padding"),
+             "allow_terminal_padding", "bridge_max_ticks"),
     "s005": ("repo_id", "video_codec", "image_size", "task_prompt", "robot_type",
              "use_quantile_norm"),
 }

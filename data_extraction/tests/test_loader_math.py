@@ -71,7 +71,13 @@ def main():
     assert got == want, (sorted(got - want), sorted(want - got))
     idx2 = BoundaryAwareIndices([100, 60], [True, True], 50, False)
     assert set(idx2.indices.tolist()) == set(range(0, 50)) | set(range(100, 110))
-    print("3. BoundaryAwareIndices synthetic layouts OK")
+    # anchor_bad frames (bridged ticks) never anchor a datapoint, in both the
+    # tail-clipped and the terminal-padding regimes
+    idx3 = BoundaryAwareIndices([100, 60], [False, True], 50, True,
+                                anchor_bad=[[3, 4, 5], [58]])
+    want3 = (set(range(0, 50)) - {3, 4, 5}) | (set(range(100, 160)) - {158})
+    assert set(idx3.indices.tolist()) == want3
+    print("3. BoundaryAwareIndices synthetic layouts (+anchor_bad) OK")
 
     # --- 4. delta_timestamps shape
     dts = make_delta_timestamps(H, int(cfg.control_hz))

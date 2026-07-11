@@ -46,7 +46,10 @@ re-runs only when its config fields (dependency closure) or inputs changed.
 
 ## Filters (s004)
 
-Per-tick bad masks, OR'd, split into runs ≥ H+1 ticks; the run containing the
+Per-tick bad masks, OR'd; interior bad runs ≤ `bridge_max_ticks` (default 9
+ticks = 0.3 s) are bridged instead of splitting — those ticks stay in the
+sub-episode but never anchor a datapoint (`anchor_bad`, enforced by the
+loader). The rest splits into runs ≥ H+1 ticks; the run containing the
 recording's last tick is `episode_real_end` (only there may action chunks pad
 by repeating — "hold pose"; elsewhere padding would lie, and pi0 ignores
 `action_is_pad`, so the loader's boundary wrapper drops those datapoints).

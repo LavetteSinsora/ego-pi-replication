@@ -75,8 +75,14 @@ T = number of control ticks. Sides: `l`/`r` suffixes.
   `bad_vel_{l,r}`, `bad_ik_{l,r}`, `bad_hand_blocked_{l,r}`,
   `bad_hand_contact_{l,r}`, `bad_hand_residual_{l,r}`, and combined `bad_any (T,)`
   (respecting `filter_hands_independently` × `cfg.hands`)
+- `anchor_bad (T,) bool` — bridged ticks: interior bad runs
+  ≤ `cfg.bridge_max_ticks` do NOT split the episode; their ticks stay inside
+  the sub-episode (poses may appear inside action windows) but must never
+  anchor a datapoint (enforced by the loader)
 - `subep_start (K,) i32`, `subep_end (K,) i32` (exclusive), `subep_real_end (K,) bool`
-- meta: per-filter bad-tick counts, `n_subepisodes`, `ticks_kept`, `ticks_total`
+  (computed on `bad_any` after bridging)
+- meta: per-filter bad-tick counts, `n_subepisodes`, `ticks_kept`,
+  `ticks_bridged`, `ticks_total`
 
 ## LeRobot dataset (s005 output)
 
@@ -100,6 +106,7 @@ Sidecar `extraction_meta.json` at the dataset root:
  "episodes": {"<episode_index>": {
     "source_file": "...", "source_episode": "put_bottle_in_box/episode_1",
     "tick_start": 0, "tick_end": 143, "episode_real_end": true,
+    "anchor_bad": [37, 38, 39],
     "S": [[...]], "B_left": [[...]], "B_right": [[...]],
     "filter_stats": {"bad_gap": 3, ...}}}}
 ```
@@ -113,8 +120,10 @@ Sidecar `extraction_meta.json` at the dataset root:
   `actions (H, 30)`. Also emits `state` unchanged.
 - Boundary rule: frames with `t + H > subep_len - 1` are INVALID datapoints
   unless the sub-episode has `episode_real_end` and `allow_terminal_padding`
-  (LeRobot repeat-padding then means "hold pose"). Enforced by an
-  index-remapping wrapper dataset, because pi0 ignores `action_is_pad`.
+  (LeRobot repeat-padding then means "hold pose"). Frames listed in the
+  sidecar's `anchor_bad` (bridged ticks) are ALSO invalid as anchors, in
+  either regime. Enforced by an index-remapping wrapper dataset, because
+  pi0 ignores `action_is_pad`.
 - Training config must assert the dataset's `config_hash`.
 
 ## Verification hooks every module must keep
