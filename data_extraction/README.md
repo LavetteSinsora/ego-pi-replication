@@ -1,106 +1,69 @@
-# data_extraction
+# Data extraction condensed README
+Turns Pico-collected egocentric recordings into a LeRobot dataset for VLA training. 
 
-Raw Pico egocentric recordings → LeRobot training dataset for π0/openpi, plus
-a verification dashboard. Fully self-contained: everything needed (SE3 utils,
-G1 sim + IK, placement, BrainCo Revo2 retargeting, assets) was migrated into
-this package — no imports from `wrist_replay/` or `pico2usable/`.
+## Run the pipeline
+In [config.py](config.py), specify:
+  - `episode_dir`
+  - `output_root`: root directory where outputs will land
+  - `repo_id`: dataset/subdirectory's name 
+  - `control_hz`: robot's control frequency (generated action label is at this frequency)
+  - `task_prompt`, `action_horizon`
 
-Design record: [SPEC.md](SPEC.md) (interfaces, schemas, frame conventions).
-All tunables: [config.py](config.py) (single frozen dataclass; per-stage
-dependency-closure hashes drive caching).
-
-## What one training datapoint is
-
-- input: egocentric image `o_t` + proprioception `s_t` (per hand: flange pose
-  in the pelvis frame, 3+6D rot, + 6 BrainCo motor positions → 30 dims)
-- output: `H=50` actions, each the flange pose at tick `t+k` **relative to the
-  flange pose at tick t** (the pose simultaneous with `o_t` — what FK returns
-  at capture time), plus the 6 hand commands → (50, 30)
-
-The dataset stores **absolute per-tick poses**; relative chunks are computed
-in the data loader (`loader/relative_actions.py`), so `H` can change without
-regenerating data. Stored poses are flange-frame (`G(t) = pelvis⁻¹·S·T_wrist·B`
-with one global `B`), so deployment composes `T_target = T_anchor_FK · Δ_k`
-with no extra alignment on the robot.
-
-## Run
-
+Then, run:
 ```bash
-# all stages, all episodes (s005 needs lerobot; everything else runs without)
 .venv/bin/python -m data_extraction.run_pipeline --jobs 4
-
-# subsets / overrides
-.venv/bin/python -m data_extraction.run_pipeline --through s004 --limit 3
-.venv/bin/python -m data_extraction.run_pipeline --stages s004 --force
-.venv/bin/python -m data_extraction.run_pipeline --set action_horizon=25 --set repo_id=ego-pi/test
 ```
+Flags:
+- `--jobs N` — episodes processed in parallel
+- `--through s004` / `--stages s001,s004` — run a stage subset
+- `--set key=value` (repeatable) — overrides certain field in config
+- `--config file.json` - overrides entire config
 
-Stages: `s001` uniform 30 Hz grid → `s003_placement` per-episode rigid `S` →
-`b_calib` global wrist→flange `B` → `s003_state` IK pass (proprio + error
-signals) → `s002_01` canonical flange poses (+ selftest/continuity gates) →
-`s002_02` BrainCo commands → `s004` filters + sub-episode split → `s005`
-LeRobot dataset + `extraction_meta.json` sidecar.
+Output will land in `cfg.output_root/cfg.repo_id`
 
-Intermediates land in `data_extraction_work/<episode>/<stage>.npz`; a stage
-re-runs only when its config fields (dependency closure) or inputs changed.
-
-## Filters (s004)
-
-Per-tick bad masks, OR'd; interior bad runs ≤ `bridge_max_ticks` (default 9
-ticks = 0.3 s) are bridged instead of splitting — those ticks stay in the
-sub-episode but never anchor a datapoint (`anchor_bad`, enforced by the
-loader). The rest splits into runs ≥ H+1 ticks; the run containing the
-recording's last tick is `episode_real_end` (only there may action chunks pad
-by repeating — "hold pose"; elsewhere padding would lie, and pi0 ignores
-`action_is_pad`, so the loader's boundary wrapper drops those datapoints).
-
-interpolation gap · camera staleness · wrist velocity · IK tracking error ·
-hand blocked (sustained servo error under static command) · non-pinch
-self-collision · fingertip retarget residual (thumb/index/middle only —
-ring/pinky miss ~20–30 mm systematically: morphology, not tracking).
-
-## Dashboard
+## Inspect one converted episode
 
 ```bash
-# one page with an episode dropdown (index.html + per-episode reports + batch)
-.venv/bin/python -m data_extraction.dashboard --site -o dashboard_site
-
-# single episode / batch table only
-.venv/bin/python -m data_extraction.dashboard episode_1 -o ep1.html
-.venv/bin/python -m data_extraction.dashboard --batch
-
-# interactive 3D (macOS needs mjpython)
-.venv/bin/mjpython -m data_extraction.dashboard.viewer episode_1
+.venv/bin/python -m data_extraction.dashboard [episode_name]
 ```
+Inspect converted `episode_name.hdf5` via the dashboard `episode_name_dashboard.html`.
 
-Reads the final LeRobot dataset when it exists (`--source auto`), else the
-work dir. Replays the **stored** data through the deployment-shaped chunked
-loop — measured-anchor mode re-anchors on achieved FK exactly like a real
-rollout — on a G1 with the BrainCo hands mounted on both flanges, alongside
-the dynamic Revo2 hand replay, the human video, error curves for both anchor
-modes, and the filter timeline.
+## Data schema
 
-## Training side (openpi fork)
+**Consumes**: one raw HDF5 per demonstration (collected via ego_collect from Pico). Fields used:
 
-`loader/` is the canonical numpy implementation; `third_party/openpi/src/
-openpi/training/egopi.py` mirrors it for the training env (config
-`pi0_egopi`; `DataConfig.custom_delta_timestamps` + `dataset_root` +
-`boundary_aware` + `expected_config_hash` are honored by
-`create_torch_dataset`). Equivalence is pinned by:
+- `camera/images_left_jpeg` + `camera/timestamps_ns` — headset JPEG frames
+  (960×540)
+- `left/right_hand_pose (N,26,7)` + `left/right_hand_active` +
+  `timestamps_ns` — 26 OpenXR hand joints per side, each
+  `[x y z qx qy qz qw]` (quaternion scalar-last), in **Pico's world frame**
+  (OpenXR-style, y-up). Wrist = joint 1.
+- `body_pose (N,24,7)` is recorded but **not consumed**.
 
-```bash
-.venv/bin/python -m data_extraction.tests.test_loader_equivalence
-```
+Both streams are resampled onto a uniform control grid at `cfg.control_hz`
+(default 30 Hz) (poses
+lerp/slerp-interpolated; images matched to the nearest frame, never
+interpolated).
 
-which checks decoded loader actions against direct stage-npz computation and
-the boundary indexing (needs lerobot + a written dataset).
+**Produces**: a LeRobot dataset at `cfg.output_root/cfg.repo_id`
+(fps = cfg.control_hz). We filter noisy ticks, so each episode can be splitted into multiple LeRobot episodes.
 
-## Environment
+Per frame:
 
-Repo venv (`.venv`, uv-managed): numpy scipy h5py mujoco mink pillow imageio
-pyarrow. s005 + the equivalence test additionally need the openpi-pinned
-lerobot (pulls torch):
+1. `image` — nearest camera frame for the tick
+2. `state (30,)` — per hand (2 × 15):
+   - flange pose in the G1 base frame: position (3) + 6D rotation (6)
+   - BrainCo hand motor values: thumb flexion (1) + finger rotation (5), in [0, 1]
+3. action (eef): 
+  - `pose.left/right (9,)` — absolute flange pose in G1 base frame 
+  - `hand.left/right (6,)` - absolute BrainCo hand motor values
+  - Note that hand pose is stored as absolute pose. During training, `loader/relative_actions.py` converts *absolute pose* to *pose relative to the chunk-start tick*, while BrainCo command stays absolute
+4. `arm_qpos (14,)` — G1 joint angle (2 x 7) producing current flange pose, for diagnostic
 
-```bash
-uv pip install --python .venv/bin/python "lerobot @ git+https://github.com/huggingface/lerobot@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5"
-```
+Hand motor values are the BrainCo Revo2's native command: normalized
+position in **[0,1]** (0 = open, 1 = closed), order
+`[thumb_flex, thumb_rot, index, middle, ring, pinky]`
+
+Sidecar `extraction_meta.json` records
+  - data extraction config (dict) + `config_hash` (asserted during training so train uses expected data confgi)
+  - The real episode index each LeRobot episode comes from (since real episode can be splitted after filtering)

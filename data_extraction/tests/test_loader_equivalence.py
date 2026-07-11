@@ -5,7 +5,7 @@ For random valid datapoints: actions produced by the real loading path
 deltas computed directly from the work-dir stage npzs (s002_01 poses,
 s002_02 hand commands, sliced by the sidecar tick ranges). Also checks that
 BoundaryAwareIndices excludes exactly the tail frames of non-real-end
-episodes.
+episodes plus the sidecar's anchor_bad (bridged) frames.
 
 Run: .venv/bin/python -m data_extraction.tests.test_loader_equivalence [--root ...]
 """
@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--root", default=None, help="dataset root (default: cfg)")
     ap.add_argument("--n", type=int, default=20, help="datapoints to check")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--decode-video", action="store_true",
+                    help="really decode video frames (needs a working backend)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -86,23 +88,36 @@ def main():
     bidx = load_boundary_indices(root, H, cfg.allow_terminal_padding)
     assert bidx.total_frames == offsets[-1], \
         f"lerobot meta total {bidx.total_frames} != sidecar total {offsets[-1]}"
+    anchor_bad = [entries[i].get("anchor_bad", []) for i in range(n_eps)]
     expected_excluded = set()
     for i in range(n_eps):
         if not (real_end[i] and cfg.allow_terminal_padding):
             expected_excluded |= set(range(offsets[i] + max(lengths[i] - H, 0),
                                            offsets[i + 1]))
+        expected_excluded |= {int(offsets[i]) + int(t) for t in anchor_bad[i]}
     actual_excluded = set(range(bidx.total_frames)) - set(bidx.indices.tolist())
     assert actual_excluded == expected_excluded, (
         f"boundary mismatch: {len(actual_excluded)} excluded vs "
         f"{len(expected_excluded)} expected")
     # cross-check the standalone-constructed indices agree
-    bidx2 = BoundaryAwareIndices(lengths, real_end, H, cfg.allow_terminal_padding)
+    bidx2 = BoundaryAwareIndices(lengths, real_end, H, cfg.allow_terminal_padding,
+                                 anchor_bad=anchor_bad)
     assert np.array_equal(bidx.indices, bidx2.indices)
     print(f"boundary indexing OK: {len(bidx)}/{bidx.total_frames} frames valid, "
-          f"{len(actual_excluded)} tail frames excluded")
+          f"{len(actual_excluded)} excluded (tails + anchor_bad)")
 
     # ---- action equivalence on random valid datapoints
     assert float(cfg.control_hz).is_integer()
+    # Video pixels are not under test (assertions cover pose/hand actions
+    # only); decoding is stubbed because neither of the pinned lerobot's
+    # backends works on this Mac (torchcodec needs FFmpeg dylibs, the pyav
+    # path needs the removed torchvision.io.VideoReader). Pass --decode-video
+    # to exercise real decoding where the environment supports it.
+    if not args.decode_video:
+        import torch
+        import lerobot.common.datasets.lerobot_dataset as _lds
+        _lds.decode_video_frames = (
+            lambda path, ts, tol, backend=None: torch.zeros(len(ts), 3, 8, 8))
     dataset = LeRobotDataset(
         cfg.repo_id, root=root,
         delta_timestamps=make_delta_timestamps(H, int(cfg.control_hz)))

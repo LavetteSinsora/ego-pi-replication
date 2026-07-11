@@ -23,7 +23,10 @@ from PIL import Image
 
 from ..common import io
 
-INSTALL_CMD = ('uv pip install --python .venv/bin/python "lerobot @ '
+# datasets is pinned to openpi's uv.lock version: newer datasets (>=5) both
+# breaks the pinned lerobot's API use AND writes parquet schema metadata the
+# training env cannot read back.
+INSTALL_CMD = ('uv pip install --python .venv/bin/python "datasets==3.6.0" "lerobot @ '
                'git+https://github.com/huggingface/lerobot@'
                '0cf864870cf29f4738d3ade893e6fd13fbd7cdb5"')
 
