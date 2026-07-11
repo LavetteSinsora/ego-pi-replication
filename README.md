@@ -1,4 +1,4 @@
-# ego-pi-replication
+# ego2g1
 
 Egocentric human recordings (Pico headset) → π₀.₅ fine-tuning for a
 Unitree G1 + BrainCo Revo2 bimanual manipulation task
@@ -14,8 +14,8 @@ data/                  raw recordings + local datasets (git-ignored)
 data_extraction_work/  pipeline intermediates + dashboard site (git-ignored)
 scripts/               legacy LIBERO-OBJECT replication experiment scripts
                        (RunPod train/eval orchestration for the earlier project)
-third_party/openpi/    openpi fork (git submodule, branch egopi-data);
-                       will host the self-contained ego_* training folder
+third_party/openpi/    openpi fork (git submodule, branch ego2g1-data);
+                       will host the self-contained ego2g1 training folder
 ```
 
 ## Data pipeline
@@ -37,8 +37,8 @@ sidecar (see SPEC.md "Loader semantics").
 
 ## Training (in design)
 
-Training code will live as a self-contained `ego_*` folder at the top level
-of the openpi fork: its own train script/config importing openpi as a
+Training code will live as a self-contained `ego2g1/` folder at the top
+level of the openpi fork: its own train script/config importing openpi as a
 library (π₀.₅ base, full fine-tune), no patches to openpi `src/`.
 
 ## Working with the submodule

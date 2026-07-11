@@ -83,7 +83,7 @@ class PipelineConfig:
 
     # ---- s005 output ----
     output_root: str = str(REPO_ROOT / "lerobot_datasets")
-    repo_id: str = "ego-pi/put_bottle_in_box"
+    repo_id: str = "ego2g1/put_bottle_in_box"
     video_codec: str = "libx264"
     image_size: tuple[int, int] | None = None   # None = native
     task_prompt: str = "put the bottle in the box"
