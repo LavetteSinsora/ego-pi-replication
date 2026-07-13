@@ -45,20 +45,44 @@ def compute_placement(grid, k0, f_left, f_right):
     return S
 
 
-def refine_placement(S0, grid, backend, margin=0.03, reach_w=50.0, anchor_w=0.2):
+def torso_axis(backend):
+    """Vertical torso segment (axis point, z_lo, z_hi) for the clearance
+    proxy: pelvis xy, spanning pelvis height to the shoulder line."""
+    p = backend.base_pose()[:3, 3]
+    z_hi = float(np.mean([backend.shoulder_anchor(s)[2]
+                          for s in ("left", "right")]))
+    return p[:2].copy(), float(p[2] - 0.15), z_hi
+
+
+def torso_clearance(pts, axis_xy, z_lo, z_hi):
+    """Distance of each point to the vertical torso segment."""
+    dxy = np.linalg.norm(pts[:, :2] - axis_xy, axis=1)
+    dz = np.maximum(0.0, np.maximum(z_lo - pts[:, 2], pts[:, 2] - z_hi))
+    return np.hypot(dxy, dz)
+
+
+def refine_placement(S0, grid, backend, k0=0, margin=0.03, reach_w=50.0,
+                     anchor_w=0.2, clearance_w=5.0, torso_clear_m=0.15):
     """Refine the heuristic placement over (dx, dy, dz, dyaw).
 
-    Two-term objective:
+    Three-term objective, evaluated over VALID ticks only (invalid ticks are
+    nearest-valid fills and tracker glitches - noise must not move S):
     - reach violation (weight `reach_w`, dominant): squared overshoot of
-      every tick's target beyond each arm's reach sphere - feasibility over
-      the whole episode. Weighted heavily so the anchor term can never buy
-      comfort at the price of unreachable targets (residual overshoot must
-      stay well under `margin`).
-    - ready-pose anchor (weight `anchor_w`): squared distance of the t0
-      wrists from the ready-pose flange positions (upper arm vertical,
-      forearm horizontal, hands in front of the chest). This keeps the
-      solution in the natural manipulation zone instead of drifting to
-      wherever the reach spheres happen to fit (e.g. down at the pelvis).
+      every valid tick's target beyond each arm's reach sphere - feasibility
+      over the whole episode. Weighted heavily so the other terms can never
+      buy comfort at the price of unreachable targets (residual overshoot
+      must stay well under `margin`).
+    - torso clearance (weight `clearance_w`): squared intrusion of every
+      valid tick inside `torso_clear_m` of a vertical torso segment
+      (pelvis xy, pelvis-to-shoulder height). Counterweight to the reach
+      term, which alone is minimized by pulling the trajectory INTO the
+      torso interior - IK then either penetrates (kinematic replay) or, with
+      collision limits, stalls and the ticks are filtered away.
+    - ready-pose anchor (weight `anchor_w`): squared distance of the k0
+      wrists (first both-valid tick, same anchor as compute_placement and
+      calibrate_alignment) from the ready-pose flange positions. This keeps
+      the solution in the natural manipulation zone instead of drifting to
+      wherever the reach spheres happen to fit.
 
     The base stays upright by construction (yaw-only), and inter-hand
     geometry (e.g. one hand a little higher) is preserved exactly - a rigid
@@ -67,11 +91,12 @@ def refine_placement(S0, grid, backend, margin=0.03, reach_w=50.0, anchor_w=0.2)
 
     sh = {s: backend.shoulder_anchor(s) for s in ("left", "right")}
     rr = {s: backend.max_reach(s) - margin for s in ("left", "right")}
-    pts = {"left": grid.l_pos, "right": grid.r_pos}
-    t0p = {"left": grid.l_pos[0], "right": grid.r_pos[0]}
+    pts = {"left": grid.l_pos[grid.l_valid], "right": grid.r_pos[grid.r_valid]}
+    t0p = {"left": grid.l_pos[k0], "right": grid.r_pos[k0]}
     backend.reset_nominal()
     ready = {s: backend.flange_pose(s)[:3, 3] for s in ("left", "right")}
-    mid = np.concatenate([grid.l_pos[:1], grid.r_pos[:1]]).mean(axis=0)
+    axis_xy, z_lo, z_hi = torso_axis(backend)
+    mid = np.stack([grid.l_pos[k0], grid.r_pos[k0]]).mean(axis=0)
     mid = (S0 @ np.append(mid, 1.0))[:3]
 
     def build(p):
@@ -86,6 +111,8 @@ def refine_placement(S0, grid, backend, margin=0.03, reach_w=50.0, anchor_w=0.2)
             p = pts[s] @ S[:3, :3].T + S[:3, 3]
             d = np.linalg.norm(p - sh[s], axis=1)
             v += reach_w * float((np.maximum(0.0, d - rr[s]) ** 2).sum())
+            c = torso_clearance(p, axis_xy, z_lo, z_hi)
+            v += clearance_w * float((np.maximum(0.0, torso_clear_m - c) ** 2).sum())
             a = (S @ np.append(t0p[s], 1.0))[:3]
             v += anchor_w * float(((a - ready[s]) ** 2).sum())
         return v
@@ -97,10 +124,12 @@ def refine_placement(S0, grid, backend, margin=0.03, reach_w=50.0, anchor_w=0.2)
         p = pts[s] @ S[:3, :3].T + S[:3, 3]
         d = np.linalg.norm(p - sh[s], axis=1)
         n_out = int((d > rr[s]).sum())
+        c = torso_clearance(p, axis_xy, z_lo, z_hi)
         a = (S @ np.append(t0p[s], 1.0))[:3]
-        print(f"  reach check {s}: {n_out}/{len(d)} ticks beyond reach "
+        print(f"  reach check {s}: {n_out}/{len(d)} valid ticks beyond reach "
               f"(worst overshoot {max(0.0, float(d.max() - rr[s])) * 100:.1f} cm); "
-              f"t0 wrist {np.round(a, 3)} vs ready flange {np.round(ready[s], 3)}")
+              f"min torso clearance {float(c.min()) * 100:.1f} cm; "
+              f"k0 wrist {np.round(a, 3)} vs ready flange {np.round(ready[s], 3)}")
     print(f"  placement refine: shift {np.round(res.x[:3], 3)} m, "
           f"yaw {np.degrees(res.x[3]):.1f} deg")
     return S

@@ -5,7 +5,9 @@ macOS needs MuJoCo's own launcher (plain python cannot open the window):
     .venv/bin/mjpython -m data_extraction.dashboard.viewer episode_1 \
         [--source auto|dataset|workdir] [--anchor measured|ground-truth]
 
-Keys: Space pause/resume, R restart, [ / ] slower / faster.
+Keys: Space pause/resume, R restart, [ / ] slower / faster, G toggle the
+ghost overlay (half-transparent robot frozen at the nominal ready pose -
+compare where the episode actually starts vs where deployment would wake up).
 Blue halo+dot = the stored (expected) flange pose; a red connector appears
 when the achieved flange drifts > 5 mm from it. Loops forever; close the
 window to exit.
@@ -22,6 +24,28 @@ from ..common.rot6d import vec9_to_se3
 from ..sim.g1 import DualArmIK
 from ..sim.g1_hands import G1HandsBackend
 from .reader import open_reader
+
+
+def make_ghost(backend, mujoco):
+    """A frozen MjData at the nominal ready configuration + display options,
+    for a half-transparent overlay. Rendering goes through mjv_addGeoms (the
+    supported path for mesh geoms - mjv_initGeom only handles primitives);
+    the caller recolors the appended geoms."""
+    m = backend.model
+    saved = backend.data.qpos.copy()
+    backend.reset_nominal()
+    ghost_data = mujoco.MjData(m)
+    ghost_data.qpos[:] = backend.data.qpos
+    mujoco.mj_forward(m, ghost_data)
+    backend.set_qpos(saved)
+
+    opt = mujoco.MjvOption()
+    opt.geomgroup[:] = 0
+    opt.geomgroup[:3] = 1                # visual groups only (collision = 3)
+    return ghost_data, opt
+
+
+GHOST_RGBA = np.array([0.35, 0.75, 0.95, 0.3], np.float32)
 
 
 def main():
@@ -57,13 +81,17 @@ def main():
          for s in sides}
     P = {s: vec9_to_se3(rec.pose[s]) for s in sides}
 
-    state = {"paused": False, "restart": False, "dt": 1.0 / rec.fps}
+    state = {"paused": False, "restart": False, "dt": 1.0 / rec.fps,
+             "ghost": False}
 
     def key_cb(keycode):
         if keycode == ord(" "):
             state["paused"] = not state["paused"]
         elif keycode in (ord("r"), ord("R")):
             state["restart"] = True
+        elif keycode in (ord("g"), ord("G")):
+            state["ghost"] = not state["ghost"]
+            print(f"  ghost (ready pose) {'ON' if state['ghost'] else 'off'}")
         elif keycode == ord("["):
             state["dt"] = min(state["dt"] * 1.5, 0.5)
         elif keycode == ord("]"):
@@ -80,7 +108,20 @@ def main():
             f"  .venv/bin/mjpython -m data_extraction.dashboard.viewer "
             f"{args.episode} --source {args.source}")
 
-    print("Space=pause  R=restart  [=slower  ]=faster; close window to exit")
+    print("Space=pause  R=restart  G=ghost ready-pose overlay  "
+          "[=slower  ]=faster; close window to exit")
+    ghost_data, ghost_opt = make_ghost(backend, mujoco)
+    ghost_pert = mujoco.MjvPerturb()
+
+    def emit_ghost(scn):
+        """Append the ghost robot via mjv_addGeoms (correct mesh rendering),
+        then recolor the appended geoms half-transparent."""
+        n0 = scn.ngeom
+        mujoco.mjv_addGeoms(backend.model, ghost_data, ghost_opt,
+                            ghost_pert, mujoco.mjtCatBit.mjCAT_DYNAMIC, scn)
+        for i in range(n0, scn.ngeom):
+            scn.geoms[i].rgba[:] = GHOST_RGBA
+            scn.geoms[i].segid = -1
 
     with viewer:
         viewer.cam.lookat[:] = [0.25, 0.0, 1.0]
@@ -113,20 +154,12 @@ def main():
 
                 plan(0)
                 k = 0
-                while k < Ts and viewer.is_running() and not state["restart"]:
-                    t_wall = time.time()
-                    if state["paused"]:
-                        viewer.sync()
-                        time.sleep(0.03)
-                        continue
-                    ik.solve_tick(tgt["left"][k], tgt["right"][k],
-                                  iters=args.ik_iters)
-                    set_hands(se.start + k)
-                    if k > 0 and k % rec.horizon == 0 and k < Ts - 1:
-                        plan(k)
 
+                def draw_overlay(k):
                     scn = viewer.user_scn
                     scn.ngeom = 0
+                    if state["ghost"]:
+                        emit_ghost(scn)
 
                     def add_sphere(size, pos, rgba):
                         if scn.ngeom >= scn.maxgeom:
@@ -155,6 +188,20 @@ def main():
                                 p_exp, p_ach)
                             scn.ngeom += 1
 
+                while k < Ts and viewer.is_running() and not state["restart"]:
+                    t_wall = time.time()
+                    if state["paused"]:
+                        draw_overlay(max(k - 1, 0))
+                        viewer.sync()
+                        time.sleep(0.03)
+                        continue
+                    ik.solve_tick(tgt["left"][k], tgt["right"][k],
+                                  iters=args.ik_iters)
+                    set_hands(se.start + k)
+                    if k > 0 and k % rec.horizon == 0 and k < Ts - 1:
+                        plan(k)
+
+                    draw_overlay(k)
                     viewer.sync()
                     k += 1
                     time.sleep(max(0.0, state["dt"] - (time.time() - t_wall)))

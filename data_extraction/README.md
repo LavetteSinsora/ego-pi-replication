@@ -24,9 +24,14 @@ Output will land in `cfg.output_root/cfg.repo_id`
 ## Inspect one converted episode
 
 ```bash
-.venv/bin/python -m data_extraction.dashboard [episode_name]
+.venv/bin/python -m data_extraction.dashboard episode_name
 ```
 Inspect converted `episode_name.hdf5` via the dashboard `episode_name_dashboard.html`.
+
+For mujoco viewer, use
+```bash
+.venv/bin/mjpython -m data_extraction.dashboard.viewer episode_name
+```
 
 ## Data schema
 

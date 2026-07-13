@@ -79,6 +79,10 @@ class _JpegSource:
 
 
 def run_global(cfg, ep_paths):
+    if cfg.state_content != "eef+hand":
+        raise SystemExit(
+            f"s005 writes state as eef+hand (30-dim) only; "
+            f"state_content={cfg.state_content!r} is not implemented here")
     try:
         from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
     except ImportError:

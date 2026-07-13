@@ -47,9 +47,12 @@ def _as_rot(m):
 
 
 def default_mount_rotations(cfg=None):
-    """Per-side flange->Revo2-base rotation from the b_calib stage output,
-    falling back to cfg.revo2_mount_rpy_deg, then identity. The calibrated
-    rotation gets the MOUNT_EXTRA_Z_DEG visual twist applied."""
+    """Per-side flange->Revo2-base rotation from the b_calib stage output, with
+    the MOUNT_EXTRA_Z_DEG visual twist applied. Raises if the b_calib cache is
+    missing: silently falling back to identity drops BOTH the calibrated palm
+    alignment and the twist, rendering the hands at the bare flange orientation
+    - a wrong-but-plausible picture that reads as a broken transform. Fail loud
+    and point at the fix instead."""
     from scipy.spatial.transform import Rotation
 
     from ..common import io
@@ -58,11 +61,15 @@ def default_mount_rotations(cfg=None):
     Rz = Rotation.from_euler("z", MOUNT_EXTRA_Z_DEG, degrees=True).as_matrix()
     try:
         arrays, _ = io.load_stage(cfg, None, "b_calib")
-        return {s: np.asarray(arrays[f"mount_R_{s}"], dtype=float) @ Rz
-                for s in ("left", "right")}
-    except (FileNotFoundError, KeyError):
-        R = _as_rot(np.asarray(cfg.revo2_mount_rpy_deg, dtype=float))
-        return {"left": R, "right": R}
+    except (FileNotFoundError, KeyError) as e:
+        raise RuntimeError(
+            "b_calib cache missing - the mounted-hand render needs mount_R_* "
+            "from the b_calib stage. Run it first:\n"
+            "  .venv/bin/python -m data_extraction.run_pipeline --through b_calib\n"
+            "(or pass an explicit `mount=` to build_g1_hands_model)."
+        ) from e
+    return {s: np.asarray(arrays[f"mount_R_{s}"], dtype=float) @ Rz
+            for s in ("left", "right")}
 
 
 def build_g1_hands_model(mount=None):

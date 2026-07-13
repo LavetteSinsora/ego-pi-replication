@@ -15,7 +15,8 @@ from ..common.rot6d import se3_to_vec9
 
 
 def run_episode(cfg, ep_path):
-    from ..sim.g1 import ARM_JOINTS, G1Backend, DualArmIK
+    from ..sim.g1 import (ARM_JOINTS, G1Backend, DualArmIK,
+                          collision_geom_groups, self_clearance)
     from .grid_util import episode_B, load_grid
 
     grid, _, S = load_grid(cfg, ep_path.stem, with_S=True)
@@ -32,13 +33,19 @@ def run_episode(cfg, ep_path):
     qpos = np.zeros((T, 14), dtype=np.float32)
     err_pos = {s: np.zeros(T, dtype=np.float32) for s in ("left", "right")}
     err_ori = {s: np.zeros(T, dtype=np.float32) for s in ("left", "right")}
+    # min self-clearance of the achieved configuration (m, negative =
+    # penetration); with the IK collision limit on this should never go
+    # negative - stored so s004 can enforce that as a hard filter
+    clear = {s: np.full(T, 0.2, dtype=np.float32) for s in ("left", "right")}
 
     if cfg.proprio_source == "direct":
         for s in ("left", "right"):
             for k in range(T):
                 state[s][k] = se3_to_vec9(T_base_inv @ targets[s][k])
     elif cfg.proprio_source == "ik_fk":
-        ik = DualArmIK(backend)
+        ik = DualArmIK(backend, collision_min_dist=(
+            cfg.ik_collision_min_m if cfg.ik_collision else None))
+        groups = collision_geom_groups(backend.model)
         backend.reset_nominal()
         ik.config.update(backend.data.qpos.copy())
         # converge onto the t0 targets from the ready pose (t0 residual is the
@@ -59,6 +66,7 @@ def run_episode(cfg, ep_path):
                 state[s][k] = se3_to_vec9(T_base_inv @ ach)
                 err_pos[s][k] = np.linalg.norm(ach[:3, 3] - cmd[s][:3, 3]) * 100.0
                 err_ori[s][k] = frames.rot_geodesic_deg(ach[:3, :3], cmd[s][:3, :3])
+                clear[s][k] = self_clearance(backend, groups, s)
     else:
         raise SystemExit(f"unknown proprio_source: {cfg.proprio_source}")
 
@@ -67,15 +75,18 @@ def run_episode(cfg, ep_path):
         "arm_qpos": qpos,
         "ik_pos_cm_l": err_pos["left"], "ik_pos_cm_r": err_pos["right"],
         "ik_ori_deg_l": err_ori["left"], "ik_ori_deg_r": err_ori["right"],
+        "self_clear_m_l": clear["left"], "self_clear_m_r": clear["right"],
     }
-    meta = {"proprio_source": cfg.proprio_source}
+    meta = {"proprio_source": cfg.proprio_source,
+            "ik_collision": bool(cfg.ik_collision)}
     for s, pre in (("left", "l"), ("right", "r")):
         live = valid[s]
         if cfg.proprio_source == "ik_fk" and live.any():
             meta[s] = {"ik_pos_cm_mean": float(err_pos[s][live].mean()),
                        "ik_pos_cm_max": float(err_pos[s][live].max()),
                        "ik_ori_deg_mean": float(err_ori[s][live].mean()),
-                       "ik_ori_deg_max": float(err_ori[s][live].max())}
+                       "ik_ori_deg_max": float(err_ori[s][live].max()),
+                       "self_clear_m_min": float(clear[s][live].min())}
     if cfg.proprio_source == "ik_fk":
         meta["init_residual_m"] = [float(e) for e in init_err]
     return arrays, meta

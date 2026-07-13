@@ -29,6 +29,15 @@ class PipelineConfig:
     max_gap_ms: float = 70.0          # bracketing-sample gap for a valid tick
     cam_stale_ms: float = 80.0        # max nearest-camera-frame age (filtered in s004)
     grid_anchor: str = "first_camera_frame"
+    # Raw-sample tracker-spike filter: the Pico hand tracker sometimes
+    # re-solves the wrist in a teleport (~83% radial to the headset - a depth
+    # re-estimate) while reporting active=1. Both endpoints of an
+    # active-active step with implied speed > spike_speed_m_s AND
+    # displacement > spike_step_cm are treated as inactive; strict splitting
+    # then cuts there and drops short glitch islands. The step floor keeps
+    # small-dt jitter from reading as speed. 0 speed disables.
+    spike_speed_m_s: float = 2.0
+    spike_step_cm: float = 3.0
 
     # ---- s002_01 eef label / frame convention ----
     pose_frame: str = "flange"        # "flange" (G(t), B baked in) | "wrist"
@@ -53,15 +62,29 @@ class PipelineConfig:
     reach_margin_m: float = 0.03
     reach_w: float = 50.0
     anchor_w: float = 0.2
+    # torso-clearance term of refine_placement: penalize valid-tick targets
+    # inside torso_clear_m of the vertical torso segment - counterweight to
+    # the reach term, which alone pulls trajectories into the torso interior
+    clearance_w: float = 5.0
+    torso_clear_m: float = 0.15
     proprio_source: str = "ik_fk"     # "ik_fk" (sim FK, deployment-faithful) | "direct"
     state_content: str = "eef+hand"   # "eef" | "eef+hand" | "eef+hand+qpos"
     ik_iters: int = 5
+    # Self-collision avoidance inside the IK QP (distal arm vs trunk/other
+    # arm): keeps sim FK states inside the deployment state distribution -
+    # the real robot cannot self-penetrate, so the replay must not either.
+    # Targets inside the body then surface as IK error and are filtered.
+    ik_collision: bool = True
+    ik_collision_min_m: float = 0.005
 
     # ---- s004 filters + splitting ----
     vel_max_m_s: float = 1.5
     ang_vel_max_deg_s: float = 500.0
     ik_err_max_cm: float = 2.0
     ik_err_max_deg: float = 10.0
+    # any tick whose achieved configuration self-penetrates deeper than this
+    # (m; 0.0 = flag only true penetration) is bad - impossible at deployment
+    min_self_clearance_m: float = 0.0
     hand_blocked_filter: bool = True
     hand_contact_filter: bool = True
     hand_residual_max_mm: float = 25.0
@@ -74,12 +97,13 @@ class PipelineConfig:
     filter_hands_independently: bool = True
     allow_terminal_padding: bool = True
     # Interior bad runs of <= this many ticks are BRIDGED instead of splitting
-    # the episode: the flagged ticks stay inside the sub-episode (their stored
-    # poses may appear inside action windows) but are excluded as datapoint
-    # anchors (anchor_bad mask, enforced by the loader's boundary indexing).
-    # 0 disables bridging. 9 ticks = 0.3 s at 30 Hz; chosen because 8 of the
-    # 11 interior gaps on put_bottle_in_box are <= 9 ticks.
-    bridge_max_ticks: int = 9
+    # the episode (flagged ticks stay inside action windows, excluded only as
+    # anchors via anchor_bad). 0 disables bridging: every detected bad tick
+    # strictly splits the episode. Bridging bounds the DURATION of a bad run
+    # but not the displacement hidden inside it - ep36 carried an 18 cm
+    # tracker-glitch jump through a 4-tick bridge into action windows - so
+    # the default is strict splitting.
+    bridge_max_ticks: int = 0
 
     # ---- s005 output ----
     output_root: str = str(REPO_ROOT / "lerobot_datasets")
@@ -94,7 +118,9 @@ class PipelineConfig:
 
     # ---- paths (not part of any cache key) ----
     episodes_dir: str = str(REPO_ROOT / "data" / "put_bottle_in_box")
-    work_dir: str = str(REPO_ROOT / "data_extraction_work")
+    # kept inside the package so the pipeline is self-contained (this is a
+    # recompute cache keyed on the config stage-hash, not source data)
+    work_dir: str = str(REPO_ROOT / "data_extraction" / "work")
 
     # ------------------------------------------------------------- derived
     @property
@@ -153,10 +179,13 @@ class PipelineConfig:
 # Fields each stage's *own* computation reads. Cache keys use the dependency
 # closure, so downstream stages inherit upstream fields automatically.
 STAGE_FIELDS = {
-    "s001": ("control_hz", "max_gap_ms", "grid_anchor"),
-    "s003_placement": ("placement_scope", "reach_margin_m", "reach_w", "anchor_w"),
+    "s001": ("control_hz", "max_gap_ms", "grid_anchor",
+             "spike_speed_m_s", "spike_step_cm"),
+    "s003_placement": ("placement_scope", "reach_margin_m", "reach_w", "anchor_w",
+                       "clearance_w", "torso_clear_m"),
     "b_calib": ("b_alignment", "revo2_mount_rpy_deg", "hands"),
-    "s003_state": ("proprio_source", "ik_iters", "state_content", "pose_frame"),
+    "s003_state": ("proprio_source", "ik_iters", "state_content", "pose_frame",
+                   "ik_collision", "ik_collision_min_m"),
     "s002_01": ("pose_frame", "rotation_repr", "max_tick_rotation_deg"),
     "s002_02": ("fingertip_source", "hand_calib", "hand_calib_recording",
                 "hand_align", "hand_rate_limit"),
@@ -164,7 +193,8 @@ STAGE_FIELDS = {
              "ik_err_max_cm", "ik_err_max_deg", "hand_blocked_filter",
              "hand_contact_filter", "hand_residual_max_mm", "hand_residual_min_run",
              "hand_residual_fingers", "filter_hands_independently",
-             "allow_terminal_padding", "bridge_max_ticks"),
+             "allow_terminal_padding", "bridge_max_ticks",
+             "min_self_clearance_m"),
     "s005": ("repo_id", "video_codec", "image_size", "task_prompt", "robot_type",
              "use_quantile_norm"),
 }
@@ -199,7 +229,10 @@ def _closure(stage: str) -> set:
 
 def load_config(path: str | None = None, overrides: dict | None = None) -> PipelineConfig:
     """Config from defaults, optionally updated by a JSON file then a dict of
-    CLI overrides. Tuples survive the JSON round-trip."""
+    CLI overrides. Tuples survive the JSON round-trip, and int overrides of
+    float fields are coerced - stage hashes are computed from the JSON repr,
+    so `--set control_hz=30` must hash identically to the default 30.0."""
+    import typing
     values = {}
     if path:
         values.update(json.loads(Path(path).read_text()))
@@ -211,5 +244,12 @@ def load_config(path: str | None = None, overrides: dict | None = None) -> Pipel
         raise SystemExit(f"unknown config fields: {sorted(unknown)}")
     for k, v in values.items():
         if isinstance(v, list):
-            values[k] = tuple(v)
+            v = tuple(v)
+        ft = fields[k].type
+        if ft is float and isinstance(v, int) and not isinstance(v, bool):
+            v = float(v)
+        elif isinstance(v, tuple) and float in typing.get_args(ft):
+            v = tuple(float(x) if isinstance(x, int) and not isinstance(x, bool)
+                      else x for x in v)
+        values[k] = v
     return PipelineConfig(**values)

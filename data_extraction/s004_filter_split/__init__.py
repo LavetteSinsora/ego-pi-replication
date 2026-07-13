@@ -16,6 +16,8 @@ Filters and their signal sources:
 - wrist velocity:    finite-diff on the s001 grid, only across valid-valid
                      pairs (fills around invalid ticks would fake spikes)
 - IK tracking error: s003_state per-tick error (inert for proprio_source=direct)
+- self-penetration:  s003_state per-tick min self-clearance < min_self_clearance_m
+                     (safety net behind the IK collision limit; inert for direct)
 - hand blocked / non-pinch self-collision: dynamic Revo2 replay (hand/screen.py)
 - hand retarget residual: s002_02, sustained >= hand_residual_min_run ticks
 """
@@ -34,6 +36,14 @@ def _sustained(mask, min_run):
         if run >= min_run:
             out[i - run + 1:i + 1] = True
     return out
+
+
+def _residual_bad(residual_m, cols, max_mm, hand_valid):
+    """True where a gated finger's residual exceeds max_mm; an empty finger
+    selection (residual filter disabled) flags nothing."""
+    if not cols:
+        return np.zeros(len(residual_m), dtype=bool)
+    return (residual_m[:, cols].max(axis=1) * 1000 > max_mm) & hand_valid
 
 
 def _velocity_masks(cfg, pos, quat, valid):
@@ -112,6 +122,14 @@ def run_episode(cfg, ep_path):
             cfg, s001[f"{pre}_pos"], s001[f"{pre}_quat"], valid)
         masks[f"bad_ik_{pre}"] = ((s003[f"ik_pos_cm_{pre}"] > cfg.ik_err_max_cm)
                                   | (s003[f"ik_ori_deg_{pre}"] > cfg.ik_err_max_deg)) & valid
+        # self-penetration of the achieved configuration: physically
+        # impossible at deployment, so any such tick is unconditionally bad.
+        # With the IK collision limit on this is a safety net that should
+        # never fire; legacy s003 outputs without the signal pass vacuously.
+        clear_key = f"self_clear_m_{pre}"
+        masks[f"bad_clear_{pre}"] = (
+            (s003[clear_key] < cfg.min_self_clearance_m) & valid
+            if clear_key in s003 else np.zeros(T, dtype=bool))
 
         hand_valid = s002h[f"hand_valid_{pre}"].astype(bool)
         if cfg.hand_blocked_filter or cfg.hand_contact_filter:
@@ -129,12 +147,13 @@ def run_episode(cfg, ep_path):
 
         finger_order = ("thumb", "index", "middle", "ring", "pinky")
         cols = [finger_order.index(f) for f in cfg.hand_residual_fingers]
-        res_bad = (s002h[f"hand_residual_{pre}"][:, cols].max(axis=1) * 1000
-                   > cfg.hand_residual_max_mm) & hand_valid
+        res_bad = _residual_bad(s002h[f"hand_residual_{pre}"], cols,
+                                cfg.hand_residual_max_mm, hand_valid)
         masks[f"bad_hand_residual_{pre}"] = _sustained(res_bad, cfg.hand_residual_min_run)
 
-    per_side_filters = ("bad_gap", "bad_vel", "bad_ik", "bad_hand_blocked",
-                        "bad_hand_contact", "bad_hand_residual")
+    per_side_filters = ("bad_gap", "bad_vel", "bad_ik", "bad_clear",
+                        "bad_hand_blocked", "bad_hand_contact",
+                        "bad_hand_residual")
     sides = ([s[0] for s in cfg.hands] if cfg.filter_hands_independently
              else ["l", "r"])
     bad_any = masks["bad_cam"].copy()

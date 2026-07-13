@@ -44,6 +44,54 @@ NOMINAL_ARM_QPOS = {
     "right_shoulder_roll_joint": -0.1,
 }
 
+# Bodies whose collision geoms take part in self-collision avoidance /
+# clearance monitoring. Shoulder links are deliberately absent from the arm
+# sets: they sit adjacent to the torso shell (permanently near-contact) and
+# would keep the avoidance constraint saturated for no benefit - the failure
+# mode that matters is the distal arm (elbow onward, where the hand mounts)
+# entering the trunk.
+_ARM_COLLISION_BODIES = {
+    "left": ("left_elbow_link", "left_wrist_roll_link",
+             "left_wrist_pitch_link", "left_wrist_yaw_link"),
+    "right": ("right_elbow_link", "right_wrist_roll_link",
+              "right_wrist_pitch_link", "right_wrist_yaw_link"),
+}
+_TRUNK_COLLISION_BODIES = (
+    "pelvis", "torso_link",
+    "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link",
+    "right_hip_pitch_link", "right_hip_roll_link", "right_hip_yaw_link",
+)
+
+
+def collision_geom_groups(model):
+    """-> {'left': [geom ids], 'right': [...], 'trunk': [...]} of collidable
+    (contype/conaffinity != 0) geoms grouped for self-collision checks."""
+    by_body = {}
+    for g in range(model.ngeom):
+        if model.geom_contype[g] or model.geom_conaffinity[g]:
+            by_body.setdefault(model.body(model.geom_bodyid[g]).name, []).append(g)
+    groups = {"trunk": [g for b in _TRUNK_COLLISION_BODIES
+                        for g in by_body.get(b, [])]}
+    for side in ("left", "right"):
+        groups[side] = [g for b in _ARM_COLLISION_BODIES[side]
+                        for g in by_body.get(b, [])]
+    return groups
+
+
+def self_clearance(backend, groups, side, distmax=0.2):
+    """Min signed distance (m, negative = penetration) from `side`'s distal
+    arm geoms to the trunk and to the other arm, at the backend's current
+    qpos. This is the deployment-faithfulness monitor: the real robot can
+    never realize a state where this is negative."""
+    other = "right" if side == "left" else "left"
+    lo = distmax
+    for ga in groups[side]:
+        for gb in groups["trunk"] + groups[other]:
+            d = mujoco.mj_geomDistance(backend.model, backend.data,
+                                       ga, gb, distmax, None)
+            lo = min(lo, d)
+    return float(lo)
+
 
 class G1Backend:
     """Kinematic G1: set joint positions, read flange poses, render."""
@@ -140,7 +188,7 @@ class DualArmIK:
     """mink-based differential IK; arms only, everything else frozen."""
 
     def __init__(self, backend, position_cost=1.0, orientation_cost=0.3,
-                 posture_cost=1e-3, solver=None):
+                 posture_cost=1e-3, solver=None, collision_min_dist=0.005):
         import mink
         import qpsolvers
         self._mink = mink
@@ -169,6 +217,22 @@ class DualArmIK:
         vel = {m.joint(i).name: (100.0 if m.joint(i).name in arm_names else 1e-9)
                for i in range(m.njnt)}
         self._limits = [mink.ConfigurationLimit(m), mink.VelocityLimit(m, vel)]
+        # Self-collision avoidance INSIDE the QP: the solver may never emit a
+        # velocity that drives the distal arm into the trunk or the other
+        # arm. This is what keeps sim FK states inside the deployment state
+        # distribution - the real robot physically cannot self-penetrate, so
+        # the kinematic replay must not either. Targets inside the body then
+        # show up as large tracking error and are filtered, not silently
+        # "achieved". Detection distance is generous (10 cm) so a fast
+        # approach cannot tunnel through the constraint in one 33 ms step.
+        if collision_min_dist is not None:
+            groups = collision_geom_groups(m)
+            pairs = [(groups["left"], groups["trunk"] + groups["right"]),
+                     (groups["right"], groups["trunk"])]
+            self._limits.append(mink.CollisionAvoidanceLimit(
+                m, pairs,
+                minimum_distance_from_collisions=collision_min_dist,
+                collision_detection_distance=0.10))
 
     def _set_target(self, side, T):
         pos, quat = frames.pose_of(T)
@@ -182,9 +246,15 @@ class DualArmIK:
         self._set_target("left", T_target_left)
         self._set_target("right", T_target_right)
         for _ in range(iters):
-            v = self._mink.solve_ik(self.config, self._task_list, dt,
-                                    solver=self.solver, damping=1e-3,
-                                    limits=self._limits)
+            try:
+                v = self._mink.solve_ik(self.config, self._task_list, dt,
+                                        solver=self.solver, damping=1e-3,
+                                        limits=self._limits)
+            except self._mink.NoSolutionFound:
+                # QP infeasible (constraint corner case): hold the current
+                # configuration - the tracking error stays large and the
+                # tick is filtered downstream, never silently mis-solved
+                break
             self.config.integrate_inplace(v * self._mask, dt)
         q = self.config.q.copy()
         self.backend.set_qpos(q)

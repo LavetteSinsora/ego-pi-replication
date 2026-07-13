@@ -1,7 +1,7 @@
 """Two data sources, one interface.
 
 `WorkdirReader` reads the per-stage npz outputs under
-`data_extraction_work/<episode>/` (schemas in SPEC.md); `DatasetReader`
+`<work_dir>/<episode>/` (schemas in SPEC.md); `DatasetReader`
 reads the final LeRobot dataset (parquet via pyarrow + mp4 via imageio —
 lerobot itself is never imported). Both return an `EpisodeRecord` covering
 one SOURCE episode:
@@ -27,7 +27,7 @@ from ..config import PipelineConfig
 
 SIDES = (("left", "l"), ("right", "r"))
 FILTER_NAMES = ["bad_cam"] + [f"bad_{f}_{p}" for f in
-                              ("gap", "vel", "ik", "hand_blocked",
+                              ("gap", "vel", "ik", "clear", "hand_blocked",
                                "hand_contact", "hand_residual")
                               for p in ("l", "r")]
 

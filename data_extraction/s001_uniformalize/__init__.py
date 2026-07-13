@@ -65,7 +65,17 @@ def run_episode(cfg, ep_path):
     assert cfg.grid_anchor == "first_camera_frame", cfg.grid_anchor
     ep = episode_data.load_episode(str(ep_path))
     episode_data.verify_up_axis(ep)
-    grid = episode_data.build_control_grid(ep, cfg.control_hz, cfg.max_gap_ms)
+    grid = episode_data.build_control_grid(
+        ep, cfg.control_hz, cfg.max_gap_ms,
+        spike_speed_m_s=cfg.spike_speed_m_s, spike_step_cm=cfg.spike_step_cm)
+    spikes = {side: int(episode_data.spike_mask(
+                  ep.track_ns, getattr(ep, f"{side[0]}w7"),
+                  getattr(ep, f"{side[0]}_active"),
+                  cfg.spike_speed_m_s, cfg.spike_step_cm / 100.0).sum())
+              for side in ("left", "right")} if cfg.spike_speed_m_s > 0 \
+        else {"left": 0, "right": 0}
+    if any(spikes.values()):
+        print(f"  [{ep.name}] tracker spike samples flagged: {spikes}")
     ticks = grid.ticks_ns
     T = len(ticks)
 
@@ -94,6 +104,7 @@ def run_episode(cfg, ep_path):
         "hz": cfg.control_hz,
         "valid_frac": {"left": float(arrays["l_valid"].mean()),
                        "right": float(arrays["r_valid"].mean())},
+        "spike_samples": spikes,
         "cam_gap_ms_max": float(arrays["cam_gap_ms"].max()),
         "n_camera_frames": int(len(ep.cam_ns)),
     }

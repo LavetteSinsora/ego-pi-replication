@@ -1,5 +1,6 @@
 # local LeRobot dataset (fetched from HF Hub on pods)
 data/
+lerobot_datasets/
 
 __pycache__/
 *.pyc
@@ -7,9 +8,12 @@ __pycache__/
 # repo-local venv (uv; see wrist_replay/README.md)
 .venv/
 
-# data_extraction intermediates + generated reports
-data_extraction_work/
+# data_extraction recompute cache (self-contained inside the package)
+data_extraction/work/
 
 # macOS / MuJoCo noise
 .DS_Store
 MUJOCO_LOG.TXT
+
+# generated dashboard export (regenerate via data_extraction.dashboard)
+episode_*_dashboard.html

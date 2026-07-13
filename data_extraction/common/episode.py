@@ -107,6 +107,33 @@ def verify_up_axis(ep):
             f"plausible human wrist height; frame convention is suspect.")
 
 
+def spike_mask(track_ns, pose7, active, max_speed_m_s=2.0, min_step_m=0.03):
+    """Flag raw samples adjacent to physically implausible position steps.
+
+    The Pico hand tracker occasionally re-solves the wrist pose in a jump
+    (~83% radial to the headset: a depth re-estimate) while still reporting
+    active=1, so validity masks never fire. Both endpoints of any
+    active-active step whose implied speed exceeds `max_speed_m_s` AND whose
+    displacement exceeds `min_step_m` are flagged (the step floor keeps tiny
+    dt from amplifying millimeter jitter into fake speed). Flagged samples
+    count as inactive downstream: the bracketing-validity check invalidates
+    the surrounding ticks, strict splitting cuts the episode there, and a
+    short glitch island between two cuts falls under min_subepisode_ticks
+    and is dropped entirely."""
+    n = len(track_ns)
+    bad = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        if not (active[i] and active[i - 1]):
+            continue
+        dt = (track_ns[i] - track_ns[i - 1]) / 1e9
+        if dt <= 0:
+            continue
+        step = float(np.linalg.norm(pose7[i, :3] - pose7[i - 1, :3]))
+        if step > min_step_m and step / dt > max_speed_m_s:
+            bad[i] = bad[i - 1] = True
+    return bad
+
+
 def make_control_grid_ticks(ep, hz):
     """Uniform ticks anchored at the first camera frame, covering the span
     where tracking data exists."""
@@ -166,12 +193,19 @@ def _to_mj_world(pos, quat):
     return pos_mj, quat_mj
 
 
-def build_control_grid(ep, hz=30.0, max_gap_ms=70.0):
+def build_control_grid(ep, hz=30.0, max_gap_ms=70.0,
+                       spike_speed_m_s=2.0, spike_step_cm=3.0):
     ticks = make_control_grid_ticks(ep, hz)
+    l_active, r_active = ep.l_active, ep.r_active
+    if spike_speed_m_s > 0:
+        l_active = l_active & ~spike_mask(ep.track_ns, ep.lw7, ep.l_active,
+                                          spike_speed_m_s, spike_step_cm / 100.0)
+        r_active = r_active & ~spike_mask(ep.track_ns, ep.rw7, ep.r_active,
+                                          spike_speed_m_s, spike_step_cm / 100.0)
     l_pos, l_quat, l_valid = _resample_side(
-        ep.track_ns, ep.lw7, ep.l_active, ticks, max_gap_ms)
+        ep.track_ns, ep.lw7, l_active, ticks, max_gap_ms)
     r_pos, r_quat, r_valid = _resample_side(
-        ep.track_ns, ep.rw7, ep.r_active, ticks, max_gap_ms)
+        ep.track_ns, ep.rw7, r_active, ticks, max_gap_ms)
     l_pos, l_quat = _to_mj_world(l_pos, l_quat)
     r_pos, r_quat = _to_mj_world(r_pos, r_quat)
 
